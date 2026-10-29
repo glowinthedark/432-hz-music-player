@@ -47,7 +47,9 @@ python mugal.py [ROOT] [options]     # uses whatever is installed
 
 `ROOT` defaults to the current folder.
 
-`player.html` is the player template. mugal reads it from next to `mugal.py` (the default), or from the user data folder: `$XDG_DATA_HOME/mugal` if set, else `~/Library/Application Support/mugal` (macOS), `~/.local/share/mugal` (Linux), `%LOCALAPPDATA%\mugal` (Windows). If neither has a usable copy, mugal downloads it from GitHub and saves it next to itself, or in the data folder when that's read-only, or keeps it in memory for that run. A local copy is never checked online; `--update-template` does that when you ask. Offline with no copy at all, `audiodata.js` is still written and an existing `index.html` is kept.
+`player.html` is the player template. mugal reads it from next to `mugal.py` (the default), or from the user data folder: `$XDG_DATA_HOME/mugal` if set, else `~/Library/Application Support/mugal` (macOS), `~/.local/share/mugal` (Linux), `%LOCALAPPDATA%\mugal` (Windows). If neither has a usable copy, mugal downloads it from GitHub and saves it next to itself, or in the data folder when that's read-only, or keeps it in memory for that run. A local copy is never checked online. Offline with no copy at all, `audiodata.js` is still written and an existing `index.html` is kept.
+
+`--self-update` compares `mugal.py` and `player.html` with the latest on GitHub and, after asking, replaces them in place (a newer data schema always brings its matching player along). Locally edited files at the same version are left alone unless you add `--force`. If their folder isn't writable (e.g. `/usr/local/bin`), nothing changes: run it with `sudo`, or keep both files in a folder you own.
 
 ### Options
 
@@ -63,9 +65,9 @@ python mugal.py [ROOT] [options]     # uses whatever is installed
 -j, --jobs N           parallel tag readers (default 0 = auto: threads only when reads are slow, e.g. NAS)
 --no-html              only rewrite audiodata.js
 -x, --extract-template only (re)write index.html, skip scanning
---update-template      compare player.html with the latest on GitHub and offer to update it, then exit
+--self-update          update mugal.py and player.html in place to the latest on GitHub (asks first), then exit
 --force                overwrite an index.html that mugal didn't create
-                       (with --update-template: a locally edited player.html)
+                       (with --self-update: also replace locally edited mugal.py / player.html)
 --no-open              don't open the browser when done
 --serve [[HOST:]PORT]  serve over HTTP for debugging (default 127.0.0.1:8000; no seeking)
 -v, --verbose          list every file read and every file skipped

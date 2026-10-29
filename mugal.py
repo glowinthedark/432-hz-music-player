@@ -679,7 +679,28 @@ def _extract(track: str, rel: str, folder: Path, covers: Path | None, fallback: 
 
 # ── Output ────────────────────────────────────────────────────────────────────
 def write_atomic(path: Path, data: str | bytes) -> None:
-    """Write via temp file + rename so readers never see a half-written file. Keeps the replaced file's mode."""
+    """
+    Write via temp file + rename so readers never see a half-written file; keeps the replaced file's mode.
+    When the folder forbids that but the file itself is writable (permission granted on the file only), overwrite
+    it in place instead: not atomic, but it keeps the file's owner, mode and ACLs.
+    """
+    data = data.encode("utf-8") if isinstance(data, str) else data
+    try:
+        _replace(path, data)
+    except PermissionError:
+        if not os.path.isfile(path):
+            raise
+        fd = os.open(path, os.O_WRONLY | getattr(os, "O_BINARY", 0))    # no O_TRUNC: shrink only once written
+        try:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+            os.ftruncate(fd, len(data))
+        finally:
+            os.close(fd)
+
+
+def _replace(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         st = path.stat()
@@ -692,7 +713,7 @@ def write_atomic(path: Path, data: str | bytes) -> None:
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(data.encode("utf-8") if isinstance(data, str) else data)
+            f.write(data)
         if st and getattr(os, "geteuid", lambda: -1)() == 0:   # under sudo, don't hand the user's file to root
             with contextlib.suppress(OSError):
                 os.chown(tmp, st.st_uid, st.st_gid)
@@ -702,13 +723,42 @@ def write_atomic(path: Path, data: str | bytes) -> None:
                 os.replace(tmp, path)
                 return
             except PermissionError:                         # Windows: target briefly locked
-                if attempt == 4:
+                if os.name != "nt" or attempt == 4:
                     raise
                 time.sleep(0.2)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)
         raise
+
+
+def can_write(folder: Path) -> bool:
+    """Whether a file can be created in folder, by trying (os.access misjudges ACLs, read-only mounts, NAS)."""
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".mugal-", suffix=".tmp", dir=folder)
+    except OSError:
+        return False
+    os.close(fd)
+    with contextlib.suppress(OSError):
+        os.unlink(tmp)
+    return True
+
+
+def writable(path: Path) -> bool:
+    """
+    Whether write_atomic(path) can succeed, changing nothing: a file can be created in its folder (or in the
+    nearest existing ancestor, which mkdir would extend), or it's an existing file that opens for writing.
+    """
+    folder = path.parent
+    while not os.path.exists(folder) and folder.parent != folder:
+        folder = folder.parent
+    if can_write(folder):
+        return True
+    with contextlib.suppress(OSError):
+        if os.path.isfile(path):                            # not a FIFO: opening one for writing blocks
+            os.close(os.open(path, os.O_WRONLY | getattr(os, "O_BINARY", 0)))
+            return True
+    return False
 
 
 def href(target: Path, out_dir: Path) -> str:
@@ -774,21 +824,24 @@ def write_datafile(payload: dict, out_dir: Path) -> int:
 
 
 def write_html(out_dir: Path, tpl: str, force: bool) -> bool:
+    """→ whether OUTPUT/index.html is now the template (warns why not)."""
     out = out_dir / HTMLFILE
-    if out.exists() and not force:
-        try:
-            current = out.read_text("utf-8", errors="replace")[:400_000]
-        except OSError:
-            current = ""
-        if not made_by_mugal(current):
-            warn(f"{out} exists and wasn't made by mugal — left untouched (use --force to overwrite)")
-            return False
-    write_atomic(out, tpl)
+    current = read_text(out)
+    if current == tpl:                                      # nothing to write: works even when read-only
+        return True
+    if out.exists() and not force and not made_by_mugal(current or ""):
+        warn(f"{out} exists and wasn't made by mugal — left untouched (use --force to overwrite)")
+        return False
+    try:
+        write_atomic(out, tpl)
+    except OSError as e:
+        warn(f"can't write {out} ({e.strerror or e})")
+        return False
     return True
 
 
-def write_report(out_dir: Path, problems: list) -> Path | None:
-    path = out_dir / STATE_DIR / "scan-report.txt"
+def write_report(state: Path, problems: list) -> Path | None:
+    path = state / "scan-report.txt"
     if not problems:
         with contextlib.suppress(OSError):
             path.unlink()
@@ -818,12 +871,23 @@ def made_by_mugal(text: str) -> bool:
     return any(m in text for m in MARKERS)
 
 
-def user_data_dir() -> Path | None:
+def user_dir(cache: bool = False) -> Path | None:
     """
-    $XDG_DATA_HOME/mugal, else ~/Library/Application Support/mugal (macOS), ~/.local/share/mugal (Linux …),
-    %LOCALAPPDATA%\\mugal (Windows). None when there's no home folder (daemons, minimal containers).
+    Per-user folder for data (a downloaded player.html) or cache (scan caches of read-only OUTPUTs):
+      $XDG_DATA_HOME/mugal       | $XDG_CACHE_HOME/mugal       if set, else
+      macOS   ~/Library/Application Support/mugal | ~/Library/Caches/mugal
+      Linux … ~/.local/share/mugal                | ~/.cache/mugal
+      Windows %LOCALAPPDATA%\\mugal               | %LOCALAPPDATA%\\mugal\\Cache
+    None when there's no home folder (daemons, minimal containers).
     """
-    base = os.environ.get("LOCALAPPDATA" if os.name == "nt" else "XDG_DATA_HOME", "")
+    mac = sys.platform == "darwin"
+    if os.name == "nt":
+        env, sub = "LOCALAPPDATA", "AppData/Local"
+    elif cache:
+        env, sub = "XDG_CACHE_HOME", "Library/Caches" if mac else ".cache"
+    else:
+        env, sub = "XDG_DATA_HOME", "Library/Application Support" if mac else ".local/share"
+    base = os.environ.get(env, "")
     if not os.path.isabs(base):                             # XDG: relative values are invalid, ignore them
         try:
             home = Path.home()
@@ -831,14 +895,32 @@ def user_data_dir() -> Path | None:
             return None
         if not home.is_absolute():                          # HOME=""
             return None
-        base = home / ("AppData/Local" if os.name == "nt" else
-                       "Library/Application Support" if sys.platform == "darwin" else ".local/share")
-    return Path(base) / "mugal"
+        base = home / sub
+    return Path(base) / "mugal" / ("Cache" if cache and os.name == "nt" else "")
+
+
+def state_dir(out_dir: Path) -> Path:
+    """
+    Where the scan cache and report go: OUTPUT/.mugal, or a folder per OUTPUT in the user cache folder when that
+    isn't writable. (Extracted covers stay in OUTPUT/.mugal/covers: index.html links to them.)
+    """
+    primary = out_dir / STATE_DIR
+    if writable(primary / "cache.json"):
+        return primary
+    base = user_dir(cache=True)
+    if base:
+        key = hashlib.blake2b(str(out_dir).encode("utf-8", "surrogateescape"), digest_size=6).hexdigest()
+        alt = base / f"{re.sub(r'[^A-Za-z0-9._-]', '_', out_dir.name)[:40]}-{key}"
+        if writable(alt / "cache.json"):
+            info(f"ℹ  {primary} isn't writable: the scan cache goes to {alt}")
+            return alt
+    warn(f"no writable folder for the scan cache ({primary}): every run re-reads all tags")
+    return primary
 
 
 def template_candidates() -> list[Path]:
     """Where player.html is looked for, in tie-break order: next to mugal.py (the default), the user data folder."""
-    data = user_data_dir()
+    data = user_dir()
     return [TEMPLATE] + ([data / TEMPLATE.name] if data and data / TEMPLATE.name != TEMPLATE else [])
 
 
@@ -997,18 +1079,6 @@ def confirm(question: str, default: bool) -> bool:
     return ans in ("y", "yes") if ans else default
 
 
-def can_write(folder: Path) -> bool:
-    """Whether a file can be created in folder, by trying (os.access misjudges ACLs, read-only mounts, NAS)."""
-    try:
-        fd, tmp = tempfile.mkstemp(prefix=".mugal-", suffix=".tmp", dir=folder)
-    except OSError:
-        return False
-    os.close(fd)
-    with contextlib.suppress(OSError):
-        os.unlink(tmp)
-    return True
-
-
 def update_status(current: str | None, cur_rev: tuple[int, ...], new: str, new_rev: tuple[int, ...],
                   force: bool) -> tuple[bool, str]:
     """→ (replace it?, status) of one file; current is None when there's no usable local copy."""
@@ -1051,9 +1121,9 @@ def self_update(force: bool) -> int:
     hint = ("run it from an administrator prompt" if os.name == "nt" else
             f"run  sudo {shlex.quote(sys.executable or 'python3')} {shlex.quote(str(SCRIPT))} --self-update")
     hint += "\n   or keep mugal.py and player.html in a folder you can write to"
-    for folder in dict.fromkeys(p.parent for p, _ in todo):
-        if not can_write(folder):
-            warn(f"{folder} is not writable, nothing updated: {hint}")
+    for path, _ in todo:
+        if not writable(path):
+            warn(f"{path} is not writable, nothing updated: {hint}")
             return 1
     if not confirm("Update?", True):
         info("Left unchanged.")
@@ -1074,7 +1144,7 @@ def self_update(force: bool) -> int:
 
 
 # ── Scan ──────────────────────────────────────────────────────────────────────
-def scan(a, root: Path, out_dir: Path, covers: Path | None) -> tuple[dict, dict]:
+def scan(a, root: Path, out_dir: Path, covers: Path | None, state: Path) -> tuple[dict, dict]:
     t0 = time.monotonic()
     problems: list[tuple[str, str]] = []
     found = 0
@@ -1094,7 +1164,7 @@ def scan(a, root: Path, out_dir: Path, covers: Path | None) -> tuple[dict, dict]
 
     ensure_matroska_reader(sum(os.path.splitext(f[2])[1].lower() in MATROSKA for f in files))
 
-    cache_path = out_dir / STATE_DIR / "cache.json"
+    cache_path = state / "cache.json"
     cache = {"v": CACHE_VER, "parsers": {}, "files": {}} if a.force_rescan else load_cache(cache_path)
     now = parser_versions()
     stale = {k for k, v in cache["parsers"].items() if now.get(k) and now[k] != v}
@@ -1232,21 +1302,30 @@ def main(argv=None) -> int:
 
     if a.extract_template:
         tpl = load_template()
-        if tpl is not None and write_html(out_dir, tpl, a.force):
+        ok = tpl is not None and write_html(out_dir, tpl, a.force)
+        if ok:
             info(f"✓ Wrote {page}")
         if a.serve:
             serve(out_dir, root, covers, *a.serve, not a.no_open, a.verbose)
-        return 0 if tpl is not None else 1
+        return 0 if ok else 1
 
     info(f"mugal {VERSION}\nRoot   : {root}\nOutput : {out_dir}" + (f"\nExclude: {', '.join(a.exclude)}" if a.exclude else ""))
+    data = out_dir / DATAFILE
+    no_write = f"   Use -o DIR to put the player in a folder you can write to, or fix the permissions of {data}"
+    if not writable(data):                                  # checks run before the scan, which can take minutes
+        die(f"no write permission for {data} or its folder\n{no_write}")
     if not MutagenFile:
         warn("mutagen is not installed — tracks are listed by file name only (no tags, durations or covers).")
         for line in install_hint("mutagen", "enzyme"):
             print(line, file=sys.stderr)
-    tpl = None if a.no_html else load_template()            # before the scan, which can take minutes
+    tpl = None if a.no_html else load_template()
+    state = state_dir(out_dir)
 
-    payload, st = scan(a, root, out_dir, covers)
-    size = write_datafile(payload, out_dir)
+    payload, st = scan(a, root, out_dir, covers, state)
+    try:
+        size = write_datafile(payload, out_dir)
+    except OSError as e:
+        die(f"can't write {data} ({e.strerror or e})\n{no_write}")
     cached = st["files"] - st["parsed"]
     info(f"✓ {st['files']} audio files in {st['secs']:.1f}s ({cached} cached, {st['parsed']} read)")
     mb = f"{size / 1048576:.1f} MB" if size >= 1048576 else f"{max(1, size // 1024)} KB"
@@ -1260,7 +1339,7 @@ def main(argv=None) -> int:
     other = len(st["problems"]) - st["unread"] - st["no_reader"]
     if other > 0:
         warn(f"{other} other problem{'s' * (other != 1)} (unreadable folders, invalid names, covers)")
-    report = write_report(out_dir, st["problems"])
+    report = write_report(state, st["problems"])
     if report:
         info(f"   Details: {report}" + ("" if a.verbose else "  (or run with -v)"))
         if a.verbose:
@@ -1271,12 +1350,13 @@ def main(argv=None) -> int:
     html_ok = tpl is not None and write_html(out_dir, tpl, a.force)
     if html_ok:
         info(f"✓ Wrote {HTMLFILE}")
-    elif tpl is None and not a.no_html:
+    elif not a.no_html:                                     # exit 0 only if OUTPUT ends up with a working player
         if isinstance(check_template(read_text(page) or ""), str):
-            warn(f"{HTMLFILE} not written: no {TEMPLATE.name} (see above)")
+            if tpl is None:
+                warn(f"{HTMLFILE} not written: no {TEMPLATE.name} (see above)")
             rc = 1
         else:
-            info(f"ℹ  {HTMLFILE} left as is: no {TEMPLATE.name}, but the existing player works with this data")
+            info(f"ℹ  {HTMLFILE} left as is; the existing player works with this data")
     if a.serve:
         serve(out_dir, root, covers, *a.serve, not a.no_open, a.verbose)
     elif page.exists():

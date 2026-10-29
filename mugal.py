@@ -86,7 +86,9 @@ ART_RES    = tuple(re.compile(p) for p in (
 ))
 DATAFILE   = "audiodata.js"
 HTMLFILE   = "index.html"
-TEMPLATE   = Path(__file__).resolve().with_name("player.html")
+TEMPLATE   = Path(__file__).resolve().with_name("player.html")    # default home of the player template
+TEMPLATE_URL = "https://raw.githubusercontent.com/glowinthedark/html-music-gallery-creator/refs/heads/master/player.html"
+TEMPLATE_MAX = 4 << 20                                             # bytes; the template is ~100 KB
 STATE_DIR  = ".mugal"                       # cache, report, fallback covers (inside OUTPUT)
 MARKERS    = ('<meta name="generator" content="mugal"', "MUSIC PLAYER — file:// compatible")
 FIELDS     = ("title", "artist", "album", "albumArtist", "track", "disc", "year", "genre", "duration", "art")
@@ -192,7 +194,11 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="parallel tag readers (default 0 = auto: threads only when reads are slow, e.g. NAS)")
     p.add_argument("--no-html", action="store_true", help="only rewrite audiodata.js")
     p.add_argument("-x", "--extract-template", action="store_true", help="only (re)write index.html, skip scanning")
-    p.add_argument("--force", action="store_true", help="overwrite an index.html that mugal didn't create")
+    p.add_argument("--update-template", action="store_true",
+                   help="compare player.html with the latest on GitHub and offer to update it, then exit")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite an index.html that mugal didn't create "
+                        "(with --update-template: a locally edited player.html)")
     p.add_argument("--no-open", action="store_true", help="don't open the browser when done")
     p.add_argument("--serve", nargs="?", const="8000", metavar="[HOST:]PORT",
                    help="serve the player over HTTP for debugging (default 127.0.0.1:8000; no seeking)")
@@ -760,18 +766,14 @@ def write_datafile(payload: dict, out_dir: Path) -> int:
     return out.stat().st_size
 
 
-def write_html(out_dir: Path, force: bool) -> bool:
-    try:
-        tpl = TEMPLATE.read_text("utf-8")
-    except OSError as e:
-        die(f"player template not found: {TEMPLATE} ({e.strerror or e}) — keep player.html next to mugal.py")
+def write_html(out_dir: Path, tpl: str, force: bool) -> bool:
     out = out_dir / HTMLFILE
     if out.exists() and not force:
         try:
             current = out.read_text("utf-8", errors="replace")[:400_000]
         except OSError:
             current = ""
-        if not any(m in current for m in MARKERS):
+        if not made_by_mugal(current):
             warn(f"{out} exists and wasn't made by mugal — left untouched (use --force to overwrite)")
             return False
     write_atomic(out, tpl)
@@ -790,6 +792,214 @@ def write_report(out_dir: Path, problems: list) -> Path | None:
         write_atomic(path, "\n".join(lines) + "\n")
         return path
     return None
+
+
+# ── Player template (player.html) ─────────────────────────────────────────────
+# Bump <meta name="mugal-template" content="YYYY.MM.DD"> in player.html on every change: --update-template
+# compares it with GitHub's copy. A template without it counts as the oldest.
+_TPL_REV    = re.compile(r'<meta name="mugal-template" content="(\d{1,9}(?:\.\d{1,9}){0,5})"')
+_TPL_SCHEMA = re.compile(r"\bconst SCHEMA\s*=\s*(\d{1,6})\b")
+
+
+def made_by_mugal(text: str) -> bool:
+    return any(m in text for m in MARKERS)
+
+
+def user_data_dir() -> Path | None:
+    """
+    $XDG_DATA_HOME/mugal, else ~/Library/Application Support/mugal (macOS), ~/.local/share/mugal (Linux …),
+    %LOCALAPPDATA%\\mugal (Windows). None when there's no home folder (daemons, minimal containers).
+    """
+    base = os.environ.get("LOCALAPPDATA" if os.name == "nt" else "XDG_DATA_HOME", "")
+    if not os.path.isabs(base):                             # XDG: relative values are invalid, ignore them
+        try:
+            home = Path.home()
+        except (RuntimeError, KeyError, OSError):           # no $HOME and no passwd entry
+            return None
+        if not home.is_absolute():                          # HOME=""
+            return None
+        base = home / ("AppData/Local" if os.name == "nt" else
+                       "Library/Application Support" if sys.platform == "darwin" else ".local/share")
+    return Path(base) / "mugal"
+
+
+def template_candidates() -> list[Path]:
+    """Where player.html is looked for, in tie-break order: next to mugal.py (the default), the user data folder."""
+    data = user_data_dir()
+    return [TEMPLATE] + ([data / TEMPLATE.name] if data and data / TEMPLATE.name != TEMPLATE else [])
+
+
+def read_template(path: Path) -> str | None:
+    with contextlib.suppress(OSError, ValueError):          # missing, unreadable, a folder, not UTF-8
+        if path.is_file() and path.stat().st_size <= TEMPLATE_MAX:
+            return path.read_text("utf-8")
+    return None
+
+
+def check_template(text: str) -> tuple[int, ...] | str:
+    """→ revision (() = unversioned) of a player template this mugal can use, or why it can't."""
+    if not made_by_mugal(text):
+        return "is not a mugal player"
+    if text.rstrip()[-7:].lower() != "</html>":
+        return "is incomplete (truncated?)"
+    m = _TPL_SCHEMA.search(text)
+    if not m or int(m.group(1)) != SCHEMA:
+        return f"is for another mugal version (player schema {m.group(1) if m else '?'}, this mugal needs {SCHEMA})"
+    r = _TPL_REV.search(text)
+    return tuple(map(int, r.group(1).split("."))) if r else ()
+
+
+def fmt_rev(rev: tuple[int, ...]) -> str:
+    return ".".join(map(str, rev)) or "unversioned"
+
+
+def find_template() -> tuple[tuple[Path, str, tuple[int, ...]] | None, list[str]]:
+    """
+    Best usable local template → ((path, text, revision) | None, [problem]). The highest revision wins; ties go
+    to the copy next to mugal.py, so local edits are never shadowed by an older download.
+    """
+    best, problems = None, []
+    for path in template_candidates():
+        text = read_template(path)
+        if text is None:
+            if os.path.lexists(path):
+                problems.append(f"{path} is not readable")
+            continue
+        rev = check_template(text)
+        if isinstance(rev, str):
+            problems.append(f"{path} {rev}")
+        elif best is None or rev > best[2]:
+            best = (path, text, rev)
+    return best, problems
+
+
+def save_template(text: str, prefer: Path | None = None) -> Path | None:
+    """Write player.html to `prefer`, else next to mugal.py, else the user data folder → where, or None."""
+    paths = template_candidates()
+    if prefer:
+        paths = [prefer] + [p for p in paths if p != prefer]
+    for path in paths:
+        if os.path.lexists(path) and not made_by_mugal(read_template(path) or ""):
+            continue                                        # never overwrite someone else's file
+        with contextlib.suppress(OSError):                  # read-only folder/drive, no space: try the next
+            write_atomic(path, text)
+            return path
+    return None
+
+
+def fetch_template() -> tuple[str, tuple[int, ...]] | str:
+    """Download player.html from GitHub → (text, revision), or why that failed. Network errors never raise."""
+    import http.client
+    import urllib.error
+    import urllib.request
+    try:
+        import ssl
+    except ImportError:
+        return "this Python has no SSL support"
+    req = urllib.request.Request(TEMPLATE_URL, headers={"User-Agent": f"mugal/{VERSION}"})
+    try:
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+        except OSError as e:                                # urllib wraps it in URLError; SSLError.reason is a str
+            bad = e if isinstance(e, ssl.SSLCertVerificationError) else getattr(e, "reason", None)
+            if not isinstance(bad, ssl.SSLCertVerificationError):
+                raise
+            warn(f"TLS certificate not trusted ({getattr(bad, 'verify_message', None) or bad}) — "
+                 "downloading without verifying it")
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False                      # must precede CERT_NONE
+            ctx.verify_mode = ssl.CERT_NONE
+            resp = urllib.request.urlopen(req, timeout=15, context=ctx)
+        with resp:
+            data = resp.read(TEMPLATE_MAX + 1)
+    except urllib.error.HTTPError as e:
+        return f"HTTP {e.code} {e.reason}"
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        why = getattr(e, "reason", None) or e
+        return str(getattr(why, "strerror", None) or why) or type(why).__name__
+    if len(data) > TEMPLATE_MAX:
+        return "downloaded file is too large"
+    try:
+        text = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")  # newlines as read_text() sees them
+    except UnicodeDecodeError:
+        return "downloaded file is not UTF-8 text"
+    rev = check_template(text)                              # also rejects captive-portal / proxy error pages
+    return f"downloaded file {rev}" if isinstance(rev, str) else (text, rev)
+
+
+def load_template() -> str | None:
+    """
+    player.html, without touching the network when a usable copy exists locally. Otherwise download it and save
+    it next to mugal.py, else in the user data folder, else keep it in memory for this run.
+    None (after a warning) only when there's no usable copy and the download failed.
+    """
+    found, problems = find_template()
+    if found:
+        return found[1]
+    for p in problems:
+        warn(p)
+    where = " or ".join(str(p.parent) for p in template_candidates())
+    info(f"ℹ  No usable {TEMPLATE.name} in {where}: downloading it from GitHub")
+    got = fetch_template()
+    if isinstance(got, str):
+        warn(f"{TEMPLATE.name} download failed: {got}\n   Get it from {TEMPLATE_URL}\n   and save it as {TEMPLATE}")
+        return None
+    saved = save_template(got[0])
+    if saved:
+        info(f"✓ Saved {saved}")
+    else:
+        warn(f"no writable folder for {TEMPLATE.name} ({where}): using the download for this run only")
+    return got[0]
+
+
+def confirm(question: str, default: bool) -> bool:
+    """Yes/no on an interactive terminal; the default elsewhere (pipes, cron)."""
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return default
+    try:
+        ans = input(f"   {question} {'[Y/n]' if default else '[y/N]'} ").strip().lower()
+    except EOFError:
+        print(file=sys.stderr)
+        return default
+    return ans in ("y", "yes") if ans else default
+
+
+def update_template(force: bool) -> int:
+    """--update-template: compare the local player.html with GitHub's and offer to replace it."""
+    found, _ = find_template()
+    info(f"Checking {TEMPLATE_URL}")
+    got = fetch_template()
+    if isinstance(got, str):
+        warn(f"can't check for updates: {got}")
+        return 1
+    text, rev = got
+    if found:
+        path, current, cur_rev = found
+        info(f"  installed  {fmt_rev(cur_rev):<12} {path}\n  available  {fmt_rev(rev)}")
+        if text == current:
+            info("✓ Up to date")
+            return 0
+        if rev < cur_rev:
+            info("✓ The installed copy is newer")
+            return 0
+        if rev == cur_rev:
+            warn("same version, different content (edited locally?)" + ("" if force else " — --force replaces it"))
+            if not (force or confirm("Replace it with the GitHub version?", False)):
+                info("Left unchanged.")
+                return 0
+        elif not confirm("Update?", True):
+            info("Left unchanged.")
+            return 0
+    saved = save_template(text, found[0] if found else None)
+    if not saved:
+        warn(f"no writable folder for {TEMPLATE.name}: nothing saved")
+        return 1
+    active = find_template()[0]
+    if active and active[0] != saved:
+        warn(f"saved {saved}, but {active[0]} takes precedence (read-only?): replace it by hand")
+        return 1
+    info(f"✓ Saved {saved} ({fmt_rev(rev)})\n   Re-run mugal (or mugal -x) to update index.html")
+    return 0
 
 
 # ── Scan ──────────────────────────────────────────────────────────────────────
@@ -938,6 +1148,8 @@ def main(argv=None) -> int:
         with contextlib.suppress(Exception):
             s.reconfigure(errors="replace")
     a = parse_args(argv)
+    if a.update_template:
+        return update_template(a.force)
     root = Path(a.root).expanduser().resolve() if a.root else Path.cwd().resolve()
     if not root.is_dir():
         die(f"Not a folder: {root}")
@@ -948,17 +1160,19 @@ def main(argv=None) -> int:
     page = out_dir / HTMLFILE
 
     if a.extract_template:
-        if write_html(out_dir, a.force):
+        tpl = load_template()
+        if tpl is not None and write_html(out_dir, tpl, a.force):
             info(f"✓ Wrote {page}")
         if a.serve:
             serve(out_dir, root, covers, *a.serve, not a.no_open, a.verbose)
-        return 0
+        return 0 if tpl is not None else 1
 
     info(f"mugal {VERSION}\nRoot   : {root}\nOutput : {out_dir}" + (f"\nExclude: {', '.join(a.exclude)}" if a.exclude else ""))
     if not MutagenFile:
         warn("mutagen is not installed — tracks are listed by file name only (no tags, durations or covers).")
         for line in install_hint("mutagen", "enzyme"):
             print(line, file=sys.stderr)
+    tpl = None if a.no_html else load_template()            # before the scan, which can take minutes
 
     payload, st = scan(a, root, out_dir, covers)
     size = write_datafile(payload, out_dir)
@@ -982,16 +1196,23 @@ def main(argv=None) -> int:
             for p, reason in st["problems"]:
                 info(f"   {reason}: {p}")
 
-    html_ok = not a.no_html and write_html(out_dir, a.force)
+    rc = 0
+    html_ok = tpl is not None and write_html(out_dir, tpl, a.force)
     if html_ok:
         info(f"✓ Wrote {HTMLFILE}")
+    elif tpl is None and not a.no_html:
+        if isinstance(check_template(read_template(page) or ""), str):
+            warn(f"{HTMLFILE} not written: no {TEMPLATE.name} (see above)")
+            rc = 1
+        else:
+            info(f"ℹ  {HTMLFILE} left as is: no {TEMPLATE.name}, but the existing player works with this data")
     if a.serve:
         serve(out_dir, root, covers, *a.serve, not a.no_open, a.verbose)
     elif page.exists():
         info(f"\nOpen {page.as_uri()}")
         if html_ok and not a.no_open:
             open_url(page.as_uri())
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

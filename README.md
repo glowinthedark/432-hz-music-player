@@ -83,10 +83,16 @@ python mugal.py [ROOT] [options]     # uses whatever is installed
 ### Examples
 
 ```bash
-python mugal.py ~/Music
-python mugal.py ~/Music --exclude Podcasts --exclude '*.wav'
-python mugal.py /Volumes/NAS/Music -o ~/player --min-duration 30
-python mugal.py ~/Music --no-open              # e.g. from cron / launchd
+# process current folder
+python3 mugal.py
+python3 mugal.py ~/Music
+python3 mugal.py ~/Music --exclude Podcasts --exclude '*.wav'
+python3 mugal.py /Volumes/NAS/Music -o ~/player --min-duration 30
+python3 mugal.py ~/Music --no-open              # e.g. from cron / launchd
+```
+### run without installing with [uv](https://docs.astral.sh/uv/getting-started/installation/)
+```
+uv run https://raw.githubusercontent.com/glowinthedark/432-hz-music-player/refs/heads/master/mugal.py
 ```
 
 ## Output

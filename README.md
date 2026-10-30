@@ -1,6 +1,13 @@
-# HTML Music Gallery Creator
+# 432 Hz Music Player
 
-A Python script that turns a local music library into a zero-dependency HTML audio player. Open the generated `index.html` straight from disk (`file://`); no server required. Handles libraries of 100k+ tracks.
+> [!IMPORTANT]
+> This project is _NOT_ a **432 Hz Music Player**! 
+> 
+> It is a python script that you run _once_ in your music folder, it creates a static index.html file that you then double-click and open in your browser to give you a full **432 Hz Music Player** experience without having to install anything. 
+> 
+> Technically, it is **432 Hz Music Player** creator script. 
+> 
+> The generated `index.html` can be double-clicked and opened in the browser (over the `file://` protocol); no server required. It can handle music collections of 100k+ tracks. If you already run a web server then the index.html will allow you to access the music player from any host that has access to server simply by pointing to the folder.
 
 ![](mu.png)
 

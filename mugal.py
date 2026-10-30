@@ -73,7 +73,7 @@ def _load_enzyme():
 enzyme = _load_enzyme()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-VERSION    = "14.0925.17"   # bump on every change: --self-update compares it with GitHub's
+VERSION    = "14.1008.18"   # bump on every change: --self-update compares it with GitHub's
 SCHEMA     = 2        # audiodata.js layout; player.html refuses other versions
 CACHE_VER  = 2        # bump whenever tag extraction changes → one full rescan
 AUDIO_EXTS = frozenset({".mp3", ".flac", ".ogg", ".opus", ".m4a", ".aac", ".wav", ".webm"})

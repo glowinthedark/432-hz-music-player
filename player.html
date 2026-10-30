@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="generator" content="mugal">
-<meta name="mugal-template" content="2026.10.29">
+<meta name="mugal-template" content="2026.10.30">
 <meta name="color-scheme" content="dark">
 <title>Music</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 32 32%22%3E%3Crect width=%2232%22 height=%2232%22 rx=%227%22 fill=%22%23111318%22/%3E%3Ctext x=%2216%22 y=%2224%22 font-size=%2222%22 text-anchor=%22middle%22 fill=%22%23C8873A%22%3E%E2%99%AB%3C/text%3E%3C/svg%3E">
@@ -22,7 +22,7 @@
   --now-h:4rem; --tree-w:260px;
   /* virtual list row heights: every row of a kind has exactly this height */
   --row-h:2.3rem; --hdr-h:3.6rem; --sec-h:2.5rem;
-  --cols:2.4rem minmax(0,1fr) minmax(0,13rem) minmax(0,11rem) 1.8rem 3.4rem 1.8rem;
+  --fav-w:1.8rem;
 }
 html{font-size:14px} /* overridden by the font-size setting; all sizes are rem-based */
 html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.4}
@@ -39,8 +39,8 @@ mark{background:none;color:var(--accent)}
 #resizer{width:4px;cursor:col-resize;flex-shrink:0;transition:background .15s;touch-action:none}
 #resizer:hover,#resizer.dragging{background:var(--accent)}
 #scrim{display:none}
-#content{flex:1;min-width:0;display:flex;flex-direction:column}
-#tracklist{flex:1;overflow-y:auto;position:relative;background:var(--bg);overscroll-behavior:contain}
+#content{flex:1;min-width:0;display:flex;flex-direction:column;container:content/inline-size}
+#tracklist{flex:1;overflow-y:auto;position:relative;background:var(--bg);overscroll-behavior:contain;overflow-anchor:none} /* VL keeps its own scroll anchor */
 
 /* ── Topbar ─────────────────────────────────────────────────────────────── */
 #menubtn{display:none}
@@ -85,13 +85,17 @@ mark{background:none;color:var(--accent)}
 .tn.loose .label{font-style:italic;font-family:var(--sans)}
 
 /* ── View bar ───────────────────────────────────────────────────────────── */
+/* When space runs out it is taken, in order, from: the meta (shown whole or not at all), the parent crumbs
+   (down to a stub), the current crumb. The buttons never shrink; narrow lists show them as icons (below). */
 #viewbar{display:flex;align-items:center;gap:10px;padding:8px 14px 8px 18px;border-bottom:1px solid var(--border);flex-shrink:0;min-height:3rem}
-#crumbs{flex:1;min-width:0;display:flex;align-items:baseline;gap:5px;overflow:hidden;white-space:nowrap}
-#crumbs a{color:var(--text2);cursor:pointer;font-size:.8571rem;flex-shrink:1;min-width:1.5rem;overflow:hidden;text-overflow:ellipsis}
+#crumbs{flex:0 1 auto;min-width:0;display:flex;align-items:baseline;gap:5px;overflow:hidden;white-space:nowrap}
+#crumbs a{color:var(--text2);cursor:pointer;font-size:.8571rem;flex-shrink:1000;min-width:1.5rem;overflow:hidden;text-overflow:ellipsis}
 #crumbs a:hover{color:var(--text);text-decoration:underline}
-#crumbs .sep{color:var(--text3);font-size:.7857rem}
-#crumbs .cur{color:var(--text);font-size:1.0714rem;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;max-width:100%}
-#viewmeta{font-size:.7857rem;color:var(--text3);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:40%}
+#crumbs .sep{color:var(--text3);font-size:.7857rem;flex-shrink:0}
+#crumbs .cur{color:var(--text);font-size:1.0714rem;overflow:hidden;text-overflow:ellipsis;min-width:0}
+/* Wrapping flex box one line tall: the text drops to the clipped second line unless it fits whole */
+#viewmeta{flex:0 1000000 auto;min-width:0;margin-left:auto;display:flex;flex-wrap:wrap;height:1.4em;overflow:hidden;font-size:.7857rem;color:var(--text3);font-family:var(--mono);white-space:nowrap}
+#viewmeta::before{content:"";height:1.4em}
 #viewbtns{display:flex;gap:6px;flex-shrink:0}
 .vb-btn{background:var(--bg3);border:1px solid var(--border);border-radius:999px;padding:4px 12px;font-size:.7857rem;cursor:pointer;white-space:nowrap}
 .vb-btn:hover{border-color:var(--accent);color:var(--accent)}
@@ -100,10 +104,19 @@ mark{background:none;color:var(--accent)}
 .vb-btn:disabled{opacity:.4;pointer-events:none}
 
 /* ── Track list (virtualized) ───────────────────────────────────────────── */
-#tracklist-header{display:grid;grid-template-columns:var(--cols);padding:6px 18px;position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--border);font-size:.7143rem;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;z-index:5}
+/* Columns follow the list's own width (container queries under Responsive), not the window's, so dragging the
+   sidebar adapts them too. Cells sit in named areas: a hidden one never shifts the rest. fr ratios keep Title the
+   widest column at every width. */
+#tracklist{--cols:2.4rem minmax(0,3fr) minmax(0,2fr) minmax(0,2fr) var(--fav-w) 3.4rem 1.8rem;--areas:"num main artist album fav dur act"}
+#tracklist-header,.tr{display:grid;grid-template-columns:var(--cols);grid-template-areas:var(--areas)}
+.t-num{grid-area:num}.t-main{grid-area:main}.t-artist{grid-area:artist}.t-album{grid-area:album}.t-fav{grid-area:fav}.t-dur{grid-area:dur}.t-act{grid-area:act}
+#tracklist-header{padding:6px 18px;position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--border);font-size:.7143rem;color:var(--text3);letter-spacing:.08em;text-transform:uppercase;z-index:5}
+#tracklist-header>*{font:inherit;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#tracklist-header .t-main{display:block}
 #vl{position:relative}
-#vl-rows{position:absolute;left:0;right:0;top:0}
-.tr{display:grid;grid-template-columns:var(--cols);align-items:center;height:var(--row-h);padding:0 14px;margin:0 4px;border-radius:4px;cursor:pointer;overflow:hidden}
+#vl-rows,#vl-probe{position:absolute;left:0;right:0;top:0}
+#vl-probe{height:0;overflow:hidden;visibility:hidden}
+.tr{align-items:center;height:var(--row-h);padding:0 14px;margin:0 4px;border-radius:4px;cursor:pointer;overflow:hidden}
 .tr:hover{background:var(--hover)}
 .tr.playing{background:rgba(63,200,122,.07)}
 .tr.playing .t-title,.tr.playing .t-num{color:var(--playing)}
@@ -113,7 +126,7 @@ mark{background:none;color:var(--accent)}
 .tr.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
 .tr.drop-after,.q-sec.drop-after{box-shadow:inset 0 -2px 0 var(--accent)}
 .t-num{font-size:.7857rem;color:var(--text3);font-family:var(--mono);text-align:right;padding-right:10px;display:flex;justify-content:flex-end}
-.t-main{min-width:0;display:flex;flex-direction:column;justify-content:center}
+.t-main{min-width:0;display:flex;flex-direction:column;justify-content:center;padding-right:10px}
 .t-title{font-size:.9286rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .t-sub{display:none;font-size:.7857rem;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .t-artist{font-size:.8571rem;color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:10px}
@@ -226,18 +239,27 @@ input[type=range]:disabled{opacity:.35;cursor:not-allowed}
 ::-webkit-scrollbar-thumb:hover{background:var(--text3)}
 
 /* ── Responsive ─────────────────────────────────────────────────────────── */
-@media (max-width:1000px){
-  :root{--cols:2.4rem minmax(0,1fr) minmax(0,12rem) 1.8rem 3.4rem 1.8rem}
-  .t-album,#th-album{display:none}
+/* Track list, by the width of #content (rem = the font-size setting, so columns keep their room at any size):
+   ≥ 52rem  # Title Artist Album ☆ Time ⋯
+   < 52rem  Album goes first: the folder headers and the crumbs already name it
+   < 36rem  two-line rows, "Artist — Album" under the title; Play / Shuffle as icons */
+@container content (max-width:52rem){
+  #tracklist{--cols:2.4rem minmax(0,3fr) minmax(0,2fr) var(--fav-w) 3.4rem 1.8rem;--areas:"num main artist fav dur act"}
+  .t-album{display:none}
+}
+@container content (max-width:36rem){
+  #tracklist{--row-h:3.2rem;--cols:2rem minmax(0,1fr) var(--fav-w) 3.2rem 1.8rem;--areas:"num main fav dur act"}
+  #tracklist-header,.t-artist{display:none}
+  .t-sub{display:block}
+  .vb-lbl{display:none}
 }
 @media (max-width:700px){
-  :root{--row-h:3.2rem;--cols:2rem minmax(0,1fr) 3.2rem 1.8rem}
+  :root{--fav-w:0px}
   #menubtn{display:block}
   #sidebar{position:absolute;top:0;bottom:0;left:0;width:min(85vw,320px)!important;z-index:50;transform:translateX(-102%);transition:transform .2s;box-shadow:8px 0 32px rgba(0,0,0,.5)}
   body.nav-open #sidebar{transform:none}
   body.nav-open #scrim{display:block;position:absolute;inset:0;background:rgba(0,0,0,.45);z-index:40}
-  #resizer,#tracklist-header,.t-artist,.t-album,.t-fav,#viewmeta{display:none}
-  .t-sub{display:block}
+  #resizer,.t-fav{display:none}
   #viewbar{padding-left:14px}
   #nowbar{flex-wrap:wrap;padding:6px 10px calc(6px + env(safe-area-inset-bottom));gap:4px 8px}
   #scrubber-wrap{order:10;flex-basis:100%}
@@ -291,8 +313,8 @@ input[type=range]:disabled{opacity:.35;cursor:not-allowed}
       <div id="viewbar"><div id="crumbs"></div><span id="viewmeta"></span><span id="viewbtns"></span></div>
       <div id="tracklist">
         <div id="loader"><span class="spin">◌</span><span>Loading library…</span></div>
-        <div id="tracklist-header" hidden><div></div><div>Title</div><div>Artist</div><div id="th-album">Album</div><div></div><div style="text-align:right">Time</div><div></div></div>
-        <div id="vl"><div id="vl-rows"></div></div>
+        <div id="tracklist-header" hidden><div class="t-main">Title</div><div class="t-artist">Artist</div><div class="t-album">Album</div><div class="t-dur">Time</div></div>
+        <div id="vl"><div id="vl-rows"></div><div id="vl-probe" aria-hidden="true"><div class="tr"><div class="t-num">0</div><div class="t-main"><div class="t-title">x</div><div class="t-sub">x</div></div></div><div class="album-h"><div class="ah-art"></div></div><div class="q-sec">x</div></div></div>
         <div id="empty" hidden></div>
       </div>
     </section>
@@ -495,14 +517,13 @@ function markActive() {
 // ── Virtual list: renders only the visible rows (fixed height per row kind) ─
 // kinds: 0 track · 1 folder header · 2 section header
 const VL = (() => {
-  const host = $("vl");
+  const host = $("vl"), probe = $("vl-probe").children;   // one hidden row per kind, styled like the real ones
   let n = 0, kindOf = () => 0, htmlOf = () => "", off = new Float64Array(1), H = [32, 50, 35], a = -1, b = -1, raf = 0;
-  function measure() {
-    rowsEl.style.transform = "";
-    rowsEl.innerHTML = '<div class="tr"><div class="t-num">0</div><div class="t-main"><div class="t-title">x</div><div class="t-sub">x</div></div></div>'
-      + '<div class="album-h"><div class="ah-art"></div></div><div class="q-sec">x</div>';
-    H = [...rowsEl.children].map((e, k) => e.getBoundingClientRect().height || H[k]);
-    a = b = -1;
+  function measure() {                                   // → whether a row height changed
+    const h = H.map((x, k) => probe[k].getBoundingClientRect().height || x);
+    if (h.every((x, k) => x === H[k])) return false;
+    H = h;
+    return true;
   }
   function layout() {
     off = new Float64Array(n + 1);
@@ -520,20 +541,24 @@ const VL = (() => {
     rowsEl.style.transform = `translateY(${off[s]}px)`;
     rowsEl.innerHTML = h;
   }
+  function remeasure() {
+    if (!measure()) return paint(false);
+    const top = at(scroller.scrollTop + 1);              // row under the sticky header (+1: scrollTop is pixel-rounded)
+    layout();
+    scroller.scrollTop = off[Math.min(top, n)];
+    paint(true);
+  }
   scroller.addEventListener("scroll", () => {
     if (!raf) raf = requestAnimationFrame(() => { raf = 0; paint(false); });
     hideMenu();
   }, { passive: true });
+  // Window resize and sidebar drag alike: more rows may be visible, and crossing a width breakpoint changes row heights
+  new ResizeObserver(remeasure).observe(scroller);
   return {
     measure,
     set(count, k, h, scrollTop = 0) { n = count; kindOf = k; htmlOf = h; layout(); scroller.scrollTop = scrollTop; paint(true); },
     refresh() { paint(true); },
-    remeasure() {
-      const top = at(scroller.scrollTop - host.offsetTop);
-      measure(); layout();
-      scroller.scrollTop = off[Math.min(top, n)] + host.offsetTop;
-      paint(true);
-    },
+    remeasure,
     visible(i) {
       if (i < 0 || i >= n) return false;
       const y = scroller.scrollTop, top = off[i] + host.offsetTop;
@@ -673,32 +698,36 @@ function viewbar() {
   let crumbs, meta = "", btns;
   if (ROUTE.v === "queue") {
     const n = upcoming();
-    crumbs = `<span class="cur">Queue</span>`;
+    crumbs = `<span class="cur" title="Queue">Queue</span>`;
     meta = n ? `${plural(n, "track")} up next` : "";
     btns = `<button class="vb-btn" data-vb="m3u"${CUR < 0 ? " disabled" : ""}>Save .m3u</button><button class="vb-btn" data-vb="clear"${Q.up.length ? "" : " disabled"}>Clear</button>`;
   } else {
-    if (ROUTE.v === "fav") crumbs = `<span class="cur">★ Favorites</span>`;
+    if (ROUTE.v === "fav") crumbs = `<span class="cur" title="Favorites">★ Favorites</span>`;
     else {
       const chain = [];
       for (let n = ROUTE.f == null ? ROOTNODE : NODE_BY_PATH.get(ROUTE.f); n; n = n.parent) chain.unshift(n);
-      crumbs = chain.map((n, k) => k === chain.length - 1 ? `<span class="cur" title="${esc(n.path || "")}">${esc(folderName(n))}</span>`
-        : `<a data-n="${n.id}">${esc(folderName(n))}</a><span class="sep">/</span>`).join("");
+      crumbs = chain.map((n, k) => {                     // title: the full path, for when the crumb is cut short
+        const name = esc(folderName(n)), tip = esc(n.path || folderName(n));
+        return k === chain.length - 1 ? `<span class="cur" title="${tip}">${name}</span>`
+          : `<a data-n="${n.id}" title="${tip}">${name}</a><span class="sep">/</span>`;
+      }).join("");
     }
     let secs = 0;
     for (const i of VIEW) secs += T[i].dur;
     meta = VIEW.length ? `${plural(VIEW.length, "track")} · ${fmtLong(secs)}${ROUTE.q ? ` · “${esc(ROUTE.q)}”` : ""}` : "";
     const off = VIEW.length ? "" : " disabled";
-    btns = `<button class="vb-btn primary" data-vb="play"${off}>▶ Play</button><button class="vb-btn" data-vb="shuffle"${off}>${ICON.shuffle} Shuffle</button>`;
+    btns = `<button class="vb-btn primary" data-vb="play" title="Play" aria-label="Play"${off}>▶<span class="vb-lbl"> Play</span></button>`
+      + `<button class="vb-btn" data-vb="shuffle" title="Shuffle" aria-label="Shuffle"${off}>${ICON.shuffle}<span class="vb-lbl"> Shuffle</span></button>`;
   }
   $("crumbs").innerHTML = crumbs; $("viewmeta").innerHTML = meta; $("viewbtns").innerHTML = btns;
 }
 
 function trackRow(i, o) {
-  const t = T[i], cur = i === CUR, fav = FAV.has(i), role = o ? o.role : "";
+  const t = T[i], cur = i === CUR, fav = FAV.has(i), role = o ? o.role : "", sub = [t.artist, t.album].filter(Boolean).join(" — ");
   const num = cur ? `<span class="eq${audio.paused ? " paused" : ""}"><i></i><i></i><i></i></span>` : t.track || "";
   return `<div class="tr${cur ? " playing" : ""}${i === FLASH ? " flash" : ""}" data-i="${i}"${o ? ` data-role="${role}" data-q="${o.q ?? -1}"` : ""} draggable="true">`
     + `<div class="t-num">${num}</div>`
-    + `<div class="t-main"><div class="t-title" title="${esc(t.title)}">${hl(t.title)}</div><div class="t-sub">${hl(t.artist)}${t.artist && t.album ? " — " : ""}${hl(t.album)}</div></div>`
+    + `<div class="t-main"><div class="t-title" title="${esc(t.title)}">${hl(t.title)}</div><div class="t-sub" title="${esc(sub)}">${hl(t.artist)}${t.artist && t.album ? " — " : ""}${hl(t.album)}</div></div>`
     + `<div class="t-artist" title="${esc(t.artist)}">${hl(t.artist)}</div>`
     + `<div class="t-album" title="${esc(t.album)}">${hl(t.album)}</div>`
     + `<button class="t-fav${fav ? " on" : ""}" data-act="fav" title="${fav ? "Remove from favorites" : "Add to favorites"}" aria-label="Favorite" aria-pressed="${fav}">${fav ? "★" : "☆"}</button>`
@@ -1459,8 +1488,6 @@ function applyFont() {
 }
 $("fs-minus").addEventListener("click", () => { if (P.font > 9) { P.font--; applyFont(); } });
 $("fs-plus").addEventListener("click", () => { if (P.font < 32) { P.font++; applyFont(); } });
-let resizeTimer = 0;
-window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(() => T.length && VL.remeasure(), 120); });
 
 (() => {
   const rz = $("resizer"), sb = $("sidebar");

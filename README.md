@@ -7,7 +7,7 @@
 > 
 > Technically, it is **432 Hz Music Player** creator script. 
 > 
-> The generated `index.html` can be double-clicked and opened in the browser (over the `file://` protocol); no server required. It can handle music collections of 100k+ tracks. If you already run a web server then the index.html will allow you to access the music player from any host that has access to server simply by pointing to the folder.
+> You open `index.html` directly in the browser (over the `file://` protocol) — no server required. It can handle music collections of 100k+ tracks. If you already run a web server then the index.html will allow you to access the music player from any host that has access to you server.
 
 ![](mu.png)
 
